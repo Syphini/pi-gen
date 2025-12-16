@@ -1,14 +1,17 @@
 #!/bin/bash -e
 
 # shellcheck disable=SC2119
+# shellcheck disable=SC1091
 run_sub_stage()
 {
 	log "Begin ${SUB_STAGE_DIR}"
+	SUB_STAGE="$(basename "${SUB_STAGE_DIR}")"
+
 	pushd "${SUB_STAGE_DIR}" > /dev/null
 	for i in {00..99}; do
 		if [ -f "${i}-debconf" ]; then
 			log "Begin ${SUB_STAGE_DIR}/${i}-debconf"
-			on_chroot << EOF
+			log_output on_chroot << EOF
 debconf-set-selections <<SELEOF
 $(cat "${i}-debconf")
 SELEOF
@@ -20,7 +23,7 @@ EOF
 			log "Begin ${SUB_STAGE_DIR}/${i}-packages-nr"
 			PACKAGES="$(sed -f "${SCRIPT_DIR}/remove-comments.sed" < "${i}-packages-nr")"
 			if [ -n "$PACKAGES" ]; then
-				on_chroot << EOF
+				log_output on_chroot << EOF
 apt-get -o Acquire::Retries=3 install --no-install-recommends -y $PACKAGES
 EOF
 			fi
@@ -30,7 +33,7 @@ EOF
 			log "Begin ${SUB_STAGE_DIR}/${i}-packages"
 			PACKAGES="$(sed -f "${SCRIPT_DIR}/remove-comments.sed" < "${i}-packages")"
 			if [ -n "$PACKAGES" ]; then
-				on_chroot << EOF
+				log_output on_chroot << EOF
 apt-get -o Acquire::Retries=3 install -y $PACKAGES
 EOF
 			fi
@@ -40,20 +43,22 @@ EOF
 			log "Begin ${SUB_STAGE_DIR}/${i}-patches"
 			pushd "${STAGE_WORK_DIR}" > /dev/null
 			if [ "${CLEAN}" = "1" ]; then
+				log "Removing .pc..."
 				rm -rf .pc
+				log "Removing ./*-pc..."
 				rm -rf ./*-pc
 			fi
 			QUILT_PATCHES="${SUB_STAGE_DIR}/${i}-patches"
 			SUB_STAGE_QUILT_PATCH_DIR="$(basename "$SUB_STAGE_DIR")-pc"
-			mkdir -p "$SUB_STAGE_QUILT_PATCH_DIR"
-			ln -snf "$SUB_STAGE_QUILT_PATCH_DIR" .pc
-			quilt upgrade
+			log_output mkdir -p "$SUB_STAGE_QUILT_PATCH_DIR"
+			log_output ln -snf "$SUB_STAGE_QUILT_PATCH_DIR" .pc
+			log_output quilt upgrade
 			if [ -e "${SUB_STAGE_DIR}/${i}-patches/EDIT" ]; then
-				echo "Dropping into bash to edit patches..."
+				log_output echo "Dropping into bash to edit patches..."
 				bash
 			fi
 			RC=0
-			quilt push -a || RC=$?
+			log_output quilt push -a || RC=$?
 			case "$RC" in
 				0|2)
 					;;
@@ -64,21 +69,24 @@ EOF
 			popd > /dev/null
 			log "End ${SUB_STAGE_DIR}/${i}-patches"
 		fi
-		if [ -x ${i}-run.sh ]; then
+		if [ -x "${i}-run.sh" ]; then
 			log "Begin ${SUB_STAGE_DIR}/${i}-run.sh"
-			./${i}-run.sh
+			log_output "./${i}-run.sh"
 			log "End ${SUB_STAGE_DIR}/${i}-run.sh"
 		elif [ -f ${i}-run.sh ]; then
 			log "Skip ${SUB_STAGE_DIR}/${i}-run.sh (not executable)"
 		fi
-		if [ -f ${i}-run-chroot.sh ]; then
+		if [ -f "${i}-run-chroot.sh" ]; then
 			log "Begin ${SUB_STAGE_DIR}/${i}-run-chroot.sh"
-			on_chroot < ${i}-run-chroot.sh
+			log_output on_chroot < "${i}-run-chroot.sh"
 			log "End ${SUB_STAGE_DIR}/${i}-run-chroot.sh"
 		fi
 	done
 	popd > /dev/null
 	log "End ${SUB_STAGE_DIR}"
+
+	SUB_STAGE=
+	SUB_STAGE_DIR=
 }
 
 
@@ -91,7 +99,7 @@ run_stage(){
 	STAGE_WORK_DIR="${WORK_DIR}/${STAGE}"
 	ROOTFS_DIR="${STAGE_WORK_DIR}"/rootfs
 
-	unmount "${WORK_DIR}/${STAGE}"
+	log_output unmount "${WORK_DIR}/${STAGE}"
 
 	if [ ! -f SKIP_IMAGES ]; then
 		if [ -f "${STAGE_DIR}/EXPORT_IMAGE" ]; then
@@ -101,12 +109,13 @@ run_stage(){
 	if [ ! -f SKIP ]; then
 		if [ "${CLEAN}" = "1" ]; then
 			if [ -d "${ROOTFS_DIR}" ]; then
+				log "Removing ${ROOTFS_DIR}..."
 				rm -rf "${ROOTFS_DIR}"
 			fi
 		fi
 		if [ -x prerun.sh ]; then
 			log "Begin ${STAGE_DIR}/prerun.sh"
-			./prerun.sh
+			log_output ./prerun.sh
 			log "End ${STAGE_DIR}/prerun.sh"
 		fi
 		for SUB_STAGE_DIR in "${STAGE_DIR}"/*; do
@@ -116,13 +125,19 @@ run_stage(){
 		done
 	fi
 
-	unmount "${WORK_DIR}/${STAGE}"
+	log_output unmount "${WORK_DIR}/${STAGE}"
 
 	PREV_STAGE="${STAGE}"
 	PREV_STAGE_DIR="${STAGE_DIR}"
 	PREV_ROOTFS_DIR="${ROOTFS_DIR}"
 	popd > /dev/null
 	log "End ${STAGE_DIR}"
+
+	# reset variables between stages
+	STAGE=
+	STAGE_DIR=
+	STAGE_WORK_DIR=
+	ROOTFS_DIR=
 }
 
 term() {
@@ -229,6 +244,7 @@ export TEMP_REPO
 export STAGE
 export STAGE_DIR
 export STAGE_WORK_DIR
+export SUB_STAGE
 export PREV_STAGE
 export PREV_STAGE_DIR
 export ROOTFS_DIR
@@ -263,48 +279,48 @@ dependencies_check "${BASE_DIR}/depends"
 
 PAGESIZE=$(getconf PAGESIZE)
 if [ "$ARCH" == "armhf" ] && [ "$PAGESIZE" != "4096" ]; then
-	echo
-	echo "ERROR: Building an $ARCH image requires a kernel with a 4k page size (current: $PAGESIZE)"
-	echo "On Raspberry Pi OS (64-bit), you can switch to a suitable kernel by adding the following to /boot/firmware/config.txt and rebooting:"
-	echo
-	echo "kernel=kernel8.img"
-	echo "initramfs initramfs8 followkernel"
-	echo
+	log
+	log "ERROR: Building an $ARCH image requires a kernel with a 4k page size (current: $PAGESIZE)"
+	log "On Raspberry Pi OS (64-bit), you can switch to a suitable kernel by adding the following to /boot/firmware/config.txt and rebooting:"
+	log
+	log "kernel=kernel8.img"
+	log "initramfs initramfs8 followkernel"
+	log
 	exit 1
 fi
 
-echo "Checking native $ARCH executable support..."
+log "Checking native $ARCH executable support..."
 if ! arch-test -n "$ARCH"; then
-	echo "WARNING: Only a native build environment is supported. Checking emulated support..."
+	log "WARNING: Only a native build environment is supported. Checking emulated support..."
 	if ! arch-test "$ARCH"; then
-		echo "No fallback mechanism found. Ensure your OS has binfmt_misc support enabled and configured."
+		log "No fallback mechanism found. Ensure your OS has binfmt_misc support enabled and configured."
 		exit 1
 	fi
 fi
 
 #check username is valid
 if [[ ! "$FIRST_USER_NAME" =~ ^[a-z][-a-z0-9_]*$ ]]; then
-	echo "Invalid FIRST_USER_NAME: $FIRST_USER_NAME"
+	log "Invalid FIRST_USER_NAME: $FIRST_USER_NAME"
 	exit 1
 fi
 
 if [[ "$DISABLE_FIRST_BOOT_USER_RENAME" == "1" ]]; then
-	echo "User rename on the first boot is disabled"
-	echo "Be advised of the security risks linked to shipping a device with default username/password set."
+	log "User rename on the first boot is disabled"
+	log "Be advised of the security risks linked to shipping a device with default username/password set."
 fi
 
 if [[ -n "${APT_PROXY}" ]] && ! curl --silent "${APT_PROXY}" >/dev/null ; then
-	echo "Could not reach APT_PROXY server: ${APT_PROXY}"
+	log "Could not reach APT_PROXY server: ${APT_PROXY}"
 	exit 1
 fi
 
 if [[ -n "${WPA_PASSWORD}" && ${#WPA_PASSWORD} -lt 8 || ${#WPA_PASSWORD} -gt 63  ]] ; then
-	echo "WPA_PASSWORD" must be between 8 and 63 characters
+	log "WPA_PASSWORD" must be between 8 and 63 characters
 	exit 1
 fi
 
 if [[ "${PUBKEY_ONLY_SSH}" = "1" && -z "${PUBKEY_SSH_FIRST_USER}" ]]; then
-	echo "Must set 'PUBKEY_SSH_FIRST_USER' to a valid SSH public key if using PUBKEY_ONLY_SSH"
+	log "Must set 'PUBKEY_SSH_FIRST_USER' to a valid SSH public key if using PUBKEY_ONLY_SSH"
 	exit 1
 fi
 
@@ -315,7 +331,7 @@ export STAGE_LIST
 
 EXPORT_CONFIG_DIR=$(realpath "${EXPORT_CONFIG_DIR:-"${BASE_DIR}/export-image"}")
 if [ ! -d "${EXPORT_CONFIG_DIR}" ]; then
-	echo "EXPORT_CONFIG_DIR invalid: ${EXPORT_CONFIG_DIR} does not exist"
+	log "EXPORT_CONFIG_DIR invalid: ${EXPORT_CONFIG_DIR} does not exist"
 	exit 1
 fi
 export EXPORT_CONFIG_DIR
@@ -345,7 +361,7 @@ done
 if [ -x "${BASE_DIR}/postrun.sh" ]; then
 	log "Begin postrun.sh"
 	cd "${BASE_DIR}"
-	./postrun.sh
+	log_output ./postrun.sh
 	log "End postrun.sh"
 fi
 

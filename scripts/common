@@ -1,7 +1,16 @@
+#!/bin/bash -e
+
 log (){
-	date +"[%Y-%m-%d %T] $*" | tee -a "${LOG_FILE}"
+	date +"[%Y-%m-%d %T] [${STAGE}] [${SUB_STAGE}] $*" | tee -a "${LOG_FILE}"
 }
 export -f log
+
+log_output (){
+	log "---------------- BEGIN: $* ----------------"
+	"$@" | tee >(sed "s/^/[${STAGE}] [${SUB_STAGE}] /" >> "${LOG_FILE}")
+	log "---------------- END: $* ----------------"
+}
+export -f log_output
 
 bootstrap(){
 	local BOOTSTRAP_CMD=debootstrap
@@ -32,7 +41,7 @@ export -f bootstrap
 
 copy_previous(){
 	if [ ! -d "${PREV_ROOTFS_DIR}" ]; then
-		echo "Previous stage rootfs not found"
+		log "Previous stage rootfs not found"
 		false
 	fi
 	mkdir -p "${ROOTFS_DIR}"
